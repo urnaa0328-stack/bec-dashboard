@@ -54,9 +54,19 @@ def _name_match(a, b):
     return b in a
 
 
-def _is_done(x):
-    x = str(x).strip().lower()
-    return any(w in x for w in ["дууссан", "done", "closed", "completed", "resolved", "хийгдсэн"])
+def _safe_to_datetime(val):
+    try:
+        return pd.to_datetime(val, errors="coerce")
+    except Exception:
+        return pd.NaT
+
+
+def _is_still_selectable(date_val):
+    dt = _safe_to_datetime(date_val)
+    if pd.isna(dt):
+        return True
+    now_naive = pd.Timestamp(_now_local().replace(tzinfo=None))
+    return dt >= now_naive
 
 
 def _load_operation_sheet(excel_path: str, system_name: str, candidates: list[str]) -> pd.DataFrame:
@@ -66,6 +76,10 @@ def _load_operation_sheet(excel_path: str, system_name: str, candidates: list[st
 
     df = pd.read_excel(excel_path, sheet_name=sheet)
     df = _ensure_text(df, ["Төслийн нэр", "Ажлын төрөл", "Явц", "Хариуцагч"])
+
+    if "Дуусах огноо" not in df.columns:
+        df["Дуусах огноо"] = ""
+
     df = df[
         (df["Төслийн нэр"] != "") |
         (df["Ажлын төрөл"] != "") |
@@ -75,7 +89,7 @@ def _load_operation_sheet(excel_path: str, system_name: str, candidates: list[st
     if df.empty:
         return pd.DataFrame()
 
-    df = df[~df["Явц"].apply(_is_done)].copy()
+    df = df[df["Дуусах огноо"].apply(_is_still_selectable)].copy()
 
     df["_source"] = "operation"
     df["_sheet"] = sheet
@@ -106,6 +120,10 @@ def _load_allmed_ticket_sheet(excel_path: str) -> pd.DataFrame:
 
     df = pd.read_excel(excel_path, sheet_name=sheet)
     df = _ensure_text(df, ["Ажлын нэр", "Явц", "Хариуцагч"])
+
+    if "Дууссан огноо" not in df.columns:
+        df["Дууссан огноо"] = ""
+
     df = df[
         (df["Ажлын нэр"] != "") |
         (df["Хариуцагч"] != "")
@@ -114,7 +132,7 @@ def _load_allmed_ticket_sheet(excel_path: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    df = df[~df["Явц"].apply(_is_done)].copy()
+    df = df[df["Дууссан огноо"].apply(_is_still_selectable)].copy()
 
     df["_source"] = "allmed_ticket"
     df["_sheet"] = sheet
@@ -317,7 +335,6 @@ def _update_allmed_ticket_status(excel_path, sheet_name, task_name, owner_name, 
     task_col = headers.get("Ажлын нэр")
     owner_col = headers.get("Хариуцагч")
     status_col = headers.get("Явц")
-    done_date_col = headers.get("Дууссан огноо")
 
     if not task_col or not owner_col or not status_col:
         wb.close()
@@ -336,10 +353,6 @@ def _update_allmed_ticket_status(excel_path, sheet_name, task_name, owner_name, 
         return False, "AllMed Ticket мөр олдсонгүй."
 
     ws.cell(target_row, status_col).value = new_status
-
-    if new_status == "Дууссан" and done_date_col:
-        ws.cell(target_row, done_date_col).value = _now_local().strftime("%Y-%m-%d %H:%M:%S")
-
     wb.save(excel_path)
     wb.close()
     return True, "Амжилттай шинэчлэгдлээ."
@@ -387,9 +400,12 @@ def render_attendance_dashboard(excel_path: str):
         st.warning("Task алга.")
         return
 
-    log_df = pd.read_excel(excel_path, sheet_name="Attendance Log") if "Attendance Log" in pd.ExcelFile(excel_path).sheet_names else pd.DataFrame()
-    if not log_df.empty:
+    xls = pd.ExcelFile(excel_path)
+    if "Attendance Log" in xls.sheet_names:
+        log_df = pd.read_excel(excel_path, sheet_name="Attendance Log")
         log_df.columns = [str(c).strip() for c in log_df.columns]
+    else:
+        log_df = pd.DataFrame()
 
     st.markdown("### Clock In / Clock Out")
 
@@ -401,7 +417,7 @@ def render_attendance_dashboard(excel_path: str):
         emp = st.selectbox("Ажилтан", [""] + employees)
 
     with col2:
-        pass
+        st.empty()
 
     tasks = _filter_tasks(df, emp)
 
@@ -440,18 +456,7 @@ def render_attendance_dashboard(excel_path: str):
                 if not ok:
                     st.error("Идэвхтэй task алга.")
                 else:
-                    upd_ok, upd_msg = _update_source_status(
-                        excel_path,
-                        result["source"],
-                        result["sheet"],
-                        result["match_key1"],
-                        result["match_key2"],
-                        "Дууссан"
-                    )
-                    if upd_ok:
-                        st.success(f"Clock Out амжилттай. Ажилласан хугацаа: {result['minutes']} минут.")
-                    else:
-                        st.warning(f"Clock Out бүртгэгдсэн ч source update дутуу: {upd_msg}")
+                    st.success(f"Clock Out амжилттай. Ажилласан хугацаа: {result['minutes']} минут.")
                     st.rerun()
 
     elif emp:
