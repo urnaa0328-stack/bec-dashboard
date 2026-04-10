@@ -1,11 +1,11 @@
 import streamlit as st
 from pathlib import Path
 
-from modules.ticket_dashboard import render_ticket_dashboard
-from modules.social_media_dashboard import render_social_media_dashboard
-from modules.sales_dashboard import render_sales_dashboard
-from modules.operation_dashboard import render_operation_dashboard
-from modules.attendance_dashboard import render_attendance_dashboard
+from ticket_dashboard import render_ticket_dashboard
+from social_media_dashboard import render_social_media_dashboard
+from sales_dashboard import render_sales_dashboard
+from operation_dashboard import render_operation_dashboard
+from attendance_dashboard import render_attendance_dashboard
 
 
 st.set_page_config(
