@@ -73,7 +73,7 @@ def _prepare_operation(df: pd.DataFrame, system_name: str) -> pd.DataFrame:
         "Эхлэх огноо",
         "Дуусах огноо",
         "Хугацаа",
-        "Хариуцагч",
+        "Оператор",
         "Дэмжлэг",
         "Явц",
         "Явцын тайлбар",
