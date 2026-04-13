@@ -1,147 +1,380 @@
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-from attendance_dashboard import render_attendance_dashboard
+import altair as alt
 
-BASE_DIR = Path(__file__).resolve().parent
-EXCEL_FILE = BASE_DIR / "allcall_bi_data.xlsx"
-SHEET_NAME = "Operation"
-
-WHITE = "#C9CED6"
-CARD_BG = "rgba(255,255,255,0.10)"
-CARD_BORDER = "rgba(255,255,255,0.16)"
+from modules.attendance_dashboard import render_attendance_dashboard
 
 
-def metric_card(title, value):
-    st.markdown(
-        f"""
-        <div style="
-            background:{CARD_BG};
-            border:1px solid {CARD_BORDER};
-            border-radius:18px;
-            padding:16px 18px;
-            min-height:100px;
-        ">
-            <div style="font-size:14px;color:{WHITE};opacity:.85;">{title}</div>
-            <div style="font-size:34px;font-weight:700;color:white;margin-top:10px;">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-@st.cache_data(show_spinner=False)
-def load_operation_data():
-    if not EXCEL_FILE.exists():
-        raise FileNotFoundError(f"Excel файл олдсонгүй: {EXCEL_FILE}")
-
-    df = pd.read_excel(EXCEL_FILE, sheet_name=SHEET_NAME)
+def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-
-    for col in ["Эхлэх огноо", "Дуусах огноо"]:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-
-    if "Хугацаа" in df.columns:
-        df["Хугацаа"] = pd.to_numeric(df["Хугацаа"], errors="coerce")
-
-    if {"Эхлэх огноо", "Дуусах огноо", "Хугацаа"}.issubset(df.columns):
-        duration_missing = (
-            df["Хугацаа"].isna() &
-            df["Эхлэх огноо"].notna() &
-            df["Дуусах огноо"].notna()
-        )
-        df.loc[duration_missing, "Хугацаа"] = (
-            df.loc[duration_missing, "Дуусах огноо"] -
-            df.loc[duration_missing, "Эхлэх огноо"]
-        ).dt.days
-
     return df
 
 
-def render_operation_dashboard(excel_path: str):
-    st.markdown("## Operation Dashboard")
+def _normalize_text(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.strip()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Operation",
-        "Нэгдсэн summary",
-        "Жагсаалт",
-        "Attendance"
-    ])
+
+def _normalize_sheet_name(name: str) -> str:
+    return (
+        str(name)
+        .strip()
+        .lower()
+        .replace("_", "")
+        .replace("-", "")
+        .replace(" ", "")
+    )
+
+
+def _find_sheet_name(excel_path: str, candidates: list[str]) -> tuple[str | None, list[str]]:
+    try:
+        xls = pd.ExcelFile(excel_path)
+        actual_sheets = xls.sheet_names
+    except Exception as e:
+        st.error(f"Excel файл нээхэд алдаа гарлаа: {e}")
+        return None, []
+
+    normalized_map = {_normalize_sheet_name(s): s for s in actual_sheets}
+
+    for candidate in candidates:
+        key = _normalize_sheet_name(candidate)
+        if key in normalized_map:
+            return normalized_map[key], actual_sheets
+
+    return None, actual_sheets
+
+
+def _read_excel_sheet_auto(excel_path: str, candidates: list[str], label: str) -> pd.DataFrame | None:
+    matched_sheet, actual_sheets = _find_sheet_name(excel_path, candidates)
+
+    if matched_sheet is None:
+        st.error(
+            f"{label} sheet олдсонгүй. Боломжит sheet нэрс: "
+            f"{', '.join(actual_sheets) if actual_sheets else 'sheet алга'}"
+        )
+        return None
 
     try:
-        df = load_operation_data().copy()
+        df = pd.read_excel(excel_path, sheet_name=matched_sheet)
+        df = _clean_columns(df)
+        st.caption(f"{label}: `{matched_sheet}` sheet уншигдлаа")
+        return df
     except Exception as e:
-        st.error(f"Operation sheet уншихад алдаа гарлаа: {e}")
-        return
+        st.error(f"{label} sheet уншихад алдаа гарлаа: {e}")
+        return None
+
+
+def _prepare_operation(df: pd.DataFrame, system_name: str) -> pd.DataFrame:
+    df = _clean_columns(df)
+
+    expected_cols = [
+        "Ажлын төрөл",
+        "Төслийн нэр",
+        "Эхлэх огноо",
+        "Дуусах огноо",
+        "Хугацаа",
+        "Хариуцагч",
+        "Дэмжлэг",
+        "Явц",
+        "Явцын тайлбар",
+    ]
+
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = ""
+
+    df["Ажлын төрөл"] = _normalize_text(df["Ажлын төрөл"])
+    df["Төслийн нэр"] = _normalize_text(df["Төслийн нэр"])
+    df["Хариуцагч"] = _normalize_text(df["Хариуцагч"])
+    df["Дэмжлэг"] = _normalize_text(df["Дэмжлэг"])
+    df["Явц"] = _normalize_text(df["Явц"])
+    df["Явцын тайлбар"] = _normalize_text(df["Явцын тайлбар"])
+
+    df["Эхлэх огноо"] = pd.to_datetime(df["Эхлэх огноо"], errors="coerce")
+    df["Дуусах огноо"] = pd.to_datetime(df["Дуусах огноо"], errors="coerce")
+    df["Хугацаа"] = pd.to_numeric(df["Хугацаа"], errors="coerce").fillna(0).astype(int)
+    df["Систем"] = system_name
+
+    df = df[
+        (df["Ажлын төрөл"] != "") |
+        (df["Төслийн нэр"] != "") |
+        (df["Хариуцагч"] != "")
+    ].copy()
+
+    today = pd.Timestamp.today().normalize()
+
+    def calc_state(row):
+        progress = str(row.get("Явц", "")).strip().lower()
+        due = row.get("Дуусах огноо", pd.NaT)
+
+        if any(x in progress for x in ["хийгдсэн", "дууссан", "шийдсэн", "done", "closed", "completed"]):
+            return "Дууссан"
+
+        if pd.notna(due):
+            if due < today:
+                return "Хугацаа хэтэрсэн"
+            if due == today:
+                return "Өнөөдөр дуусна"
+
+        if "хийгдэж" in progress:
+            return "Хийгдэж байна"
+        if "төлөвлөсөн" in progress:
+            return "Төлөвлөсөн"
+        if "хүлээгдэж" in progress:
+            return "Хүлээгдэж байна"
+        if "тест" in progress:
+            return "Тест хийж байна"
+        if "хэлэлц" in progress:
+            return "Хэлэлцэж байна"
+
+        return "Тодорхойгүй"
+
+    df["Төлөв_тооцоолсон"] = df.apply(calc_state, axis=1)
+    return df
+
+
+def _render_metrics(df: pd.DataFrame):
+    total = len(df)
+    done = len(df[df["Төлөв_тооцоолсон"] == "Дууссан"])
+    overdue = len(df[df["Төлөв_тооцоолсон"] == "Хугацаа хэтэрсэн"])
+    planning = len(df[df["Төлөв_тооцоолсон"] == "Төлөвлөсөн"])
+    in_progress = len(df[df["Төлөв_тооцоолсон"] == "Хийгдэж байна"])
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Нийт ажил", f"{total:,}")
+    c2.metric("Дууссан", f"{done:,}")
+    c3.metric("Хугацаа хэтэрсэн", f"{overdue:,}")
+    c4.metric("Төлөвлөсөн", f"{planning:,}")
+    c5.metric("Хийгдэж байна", f"{in_progress:,}")
+
+
+def _render_operation_table(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        types = ["Бүгд"] + sorted(
+            [x for x in df["Ажлын төрөл"].dropna().astype(str).unique().tolist() if x.strip()]
+        )
+        selected_type = st.selectbox("Ажлын төрөл", types, key=f"{key_prefix}_type")
+
+    with c2:
+        owners = ["Бүгд"] + sorted(
+            [x for x in df["Хариуцагч"].dropna().astype(str).unique().tolist() if x.strip()]
+        )
+        selected_owner = st.selectbox("Хариуцагч", owners, key=f"{key_prefix}_owner")
+
+    with c3:
+        states = ["Бүгд"] + sorted(
+            [x for x in df["Төлөв_тооцоолсон"].dropna().astype(str).unique().tolist() if x.strip()]
+        )
+        selected_state = st.selectbox("Төлөв", states, key=f"{key_prefix}_state")
+
+    with c4:
+        search_text = st.text_input("Төслийн нэр хайх", key=f"{key_prefix}_search").strip().lower()
+
+    fdf = df.copy()
+
+    if selected_type != "Бүгд":
+        fdf = fdf[fdf["Ажлын төрөл"] == selected_type]
+    if selected_owner != "Бүгд":
+        fdf = fdf[fdf["Хариуцагч"] == selected_owner]
+    if selected_state != "Бүгд":
+        fdf = fdf[fdf["Төлөв_тооцоолсон"] == selected_state]
+    if search_text:
+        fdf = fdf[fdf["Төслийн нэр"].str.lower().str.contains(search_text, na=False)]
+
+    show_df = fdf.copy()
+    for col in ["Эхлэх огноо", "Дуусах огноо"]:
+        if col in show_df.columns:
+            show_df[col] = pd.to_datetime(show_df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    cols = [
+        "Ажлын төрөл",
+        "Төслийн нэр",
+        "Эхлэх огноо",
+        "Дуусах огноо",
+        "Хугацаа",
+        "Хариуцагч",
+        "Дэмжлэг",
+        "Явц",
+        "Төлөв_тооцоолсон",
+        "Явцын тайлбар",
+    ]
+    cols = [c for c in cols if c in show_df.columns]
+
+    st.dataframe(show_df[cols], use_container_width=True, hide_index=True)
+    return fdf
+
+
+def _render_operation_charts(df: pd.DataFrame):
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("### Төлөвийн тархалт")
+        state_df = (
+            df.groupby("Төлөв_тооцоолсон", dropna=False)
+            .size()
+            .reset_index(name="Тоо")
+            .sort_values("Тоо", ascending=False)
+        )
+        state_df = state_df[state_df["Төлөв_тооцоолсон"].astype(str).str.strip() != ""]
+        if len(state_df) > 0:
+            chart = alt.Chart(state_df).mark_bar().encode(
+                x=alt.X("Тоо:Q", title="Тоо"),
+                y=alt.Y("Төлөв_тооцоолсон:N", sort="-x", title="Төлөв"),
+                tooltip=["Төлөв_тооцоолсон", "Тоо"]
+            ).properties(height=320)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("Өгөгдөл алга.")
+
+    with c2:
+        st.markdown("### Хариуцагч тус бүр")
+        owner_df = (
+            df.groupby("Хариуцагч", dropna=False)
+            .size()
+            .reset_index(name="Тоо")
+            .sort_values("Тоо", ascending=False)
+        )
+        owner_df = owner_df[owner_df["Хариуцагч"].astype(str).str.strip() != ""]
+        if len(owner_df) > 0:
+            chart = alt.Chart(owner_df).mark_bar().encode(
+                x=alt.X("Тоо:Q", title="Тоо"),
+                y=alt.Y("Хариуцагч:N", sort="-x", title="Хариуцагч"),
+                tooltip=["Хариуцагч", "Тоо"]
+            ).properties(height=320)
+            st.altair_chart(chart, use_container_width=True)
+        else:
+            st.info("Өгөгдөл алга.")
+
+
+def render_operation_dashboard(excel_path: str):
+    allcall_raw = _read_excel_sheet_auto(
+        excel_path,
+        candidates=[
+            "AllCall operation",
+            "AllCall Operation",
+            "Operation AllCall",
+            "AllCalloperation",
+            "operation allcall",
+        ],
+        label="AllCall Operation",
+    )
+
+    allmed_raw = _read_excel_sheet_auto(
+        excel_path,
+        candidates=[
+            "AllMed operation",
+            "AllMed Operation",
+            "Operation AllMed",
+            "AllMedoperation",
+            "operation allmed",
+        ],
+        label="AllMed Operation",
+    )
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "AllCall Operation",
+        "AllMed Operation",
+        "Нэгдсэн Operation",
+        "Attendance",
+    ])
 
     with tab1:
-        f1, f2, f3, f4 = st.columns(4)
-
-        with f1:
-            if "Ажлын төрөл" in df.columns:
-                work_types = ["Бүгд"] + sorted(df["Ажлын төрөл"].dropna().astype(str).unique().tolist())
-            else:
-                work_types = ["Бүгд"]
-            selected_type = st.selectbox("Ажлын төрөл", work_types)
-
-        with f2:
-            if "Хариуцагч" in df.columns:
-                owners = ["Бүгд"] + sorted(df["Хариуцагч"].dropna().astype(str).unique().tolist())
-            else:
-                owners = ["Бүгд"]
-            selected_owner = st.selectbox("Хариуцагч", owners)
-
-        with f3:
-            status_col = "Явц" if "Явц" in df.columns else None
-            if status_col:
-                statuses = ["Бүгд"] + sorted(df[status_col].dropna().astype(str).unique().tolist())
-            else:
-                statuses = ["Бүгд"]
-            selected_status = st.selectbox("Явц", statuses)
-
-        with f4:
-            search_text = st.text_input("Төслийн нэр хайх")
-
-        filtered_df = df.copy()
-
-        if selected_type != "Бүгд" and "Ажлын төрөл" in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df["Ажлын төрөл"].astype(str) == selected_type]
-
-        if selected_owner != "Бүгд" and "Хариуцагч" in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df["Хариуцагч"].astype(str) == selected_owner]
-
-        if selected_status != "Бүгд" and status_col:
-            filtered_df = filtered_df[filtered_df[status_col].astype(str) == selected_status]
-
-        if search_text and "Төслийн нэр" in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df["Төслийн нэр"].astype(str).str.contains(search_text, case=False, na=False)]
-
-        total = len(filtered_df)
-        done = len(filtered_df[filtered_df[status_col].astype(str).str.contains("хийгдсэн|done|complete", case=False, na=False)]) if status_col else 0
-        active = len(filtered_df[filtered_df[status_col].astype(str).str.contains("явж|progress|ongoing", case=False, na=False)]) if status_col else 0
-        extended = len(filtered_df[filtered_df[status_col].astype(str).str.contains("сунгасан|extend", case=False, na=False)]) if status_col else 0
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            metric_card("Нийт ажил", total)
-        with c2:
-            metric_card("Хийгдсэн", done)
-        with c3:
-            metric_card("Хийгдэж буй", active)
-        with c4:
-            metric_card("Хугацаа сунгасан", extended)
+        st.markdown("## AllCall Operation Dashboard")
+        if allcall_raw is None:
+            st.info("AllCall operation өгөгдөл олдсонгүй.")
+        else:
+            allcall_df = _prepare_operation(allcall_raw, "AllCall")
+            _render_metrics(allcall_df)
+            filtered_df = _render_operation_table(allcall_df, "allcall_op")
+            _render_operation_charts(filtered_df)
 
     with tab2:
-        st.dataframe(df.describe(include="all").transpose(), use_container_width=True)
+        st.markdown("## AllMed Operation Dashboard")
+        if allmed_raw is None:
+            st.info("AllMed operation өгөгдөл олдсонгүй.")
+        else:
+            allmed_df = _prepare_operation(allmed_raw, "AllMed")
+            _render_metrics(allmed_df)
+            filtered_df = _render_operation_table(allmed_df, "allmed_op")
+            _render_operation_charts(filtered_df)
 
     with tab3:
-        preferred_cols = [
-            "Ажлын төрөл", "Төслийн нэр", "Эхлэх огноо", "Дуусах огноо",
-            "Хугацаа", "Хариуцагч", "Дэмжлэг", "Явцын тайлбар", "Явц"
-        ]
-        show_cols = [c for c in preferred_cols if c in df.columns]
-        st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, hide_index=True)
+        st.markdown("## Нэгдсэн Operation Dashboard")
+        if allcall_raw is None and allmed_raw is None:
+            st.info("Operation өгөгдөл олдсонгүй.")
+        else:
+            frames = []
+            if allcall_raw is not None:
+                frames.append(_prepare_operation(allcall_raw, "AllCall"))
+            if allmed_raw is not None:
+                frames.append(_prepare_operation(allmed_raw, "AllMed"))
+
+            combined_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+            if combined_df.empty:
+                st.info("Нэгдсэн operation өгөгдөл хоосон байна.")
+            else:
+                _render_metrics(combined_df)
+
+                c1, c2, c3, c4 = st.columns(4)
+
+                with c1:
+                    selected_system = st.selectbox(
+                        "Систем",
+                        ["Бүгд", "AllCall", "AllMed"],
+                        key="op_system"
+                    )
+                with c2:
+                    types = ["Бүгд"] + sorted(
+                        [x for x in combined_df["Ажлын төрөл"].dropna().astype(str).unique().tolist() if x.strip()]
+                    )
+                    selected_type = st.selectbox("Ажлын төрөл", types, key="op_type_all")
+
+                with c3:
+                    states = ["Бүгд"] + sorted(
+                        [x for x in combined_df["Төлөв_тооцоолсон"].dropna().astype(str).unique().tolist() if x.strip()]
+                    )
+                    selected_state = st.selectbox("Төлөв", states, key="op_state_all")
+
+                with c4:
+                    search_text = st.text_input("Төслийн нэр хайх", key="op_search_all").strip().lower()
+
+                fdf = combined_df.copy()
+
+                if selected_system != "Бүгд":
+                    fdf = fdf[fdf["Систем"] == selected_system]
+                if selected_type != "Бүгд":
+                    fdf = fdf[fdf["Ажлын төрөл"] == selected_type]
+                if selected_state != "Бүгд":
+                    fdf = fdf[fdf["Төлөв_тооцоолсон"] == selected_state]
+                if search_text:
+                    fdf = fdf[fdf["Төслийн нэр"].str.lower().str.contains(search_text, na=False)]
+
+                show_df = fdf.copy()
+                for col in ["Эхлэх огноо", "Дуусах огноо"]:
+                    if col in show_df.columns:
+                        show_df[col] = pd.to_datetime(show_df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+
+                cols = [
+                    "Систем",
+                    "Ажлын төрөл",
+                    "Төслийн нэр",
+                    "Эхлэх огноо",
+                    "Дуусах огноо",
+                    "Хугацаа",
+                    "Хариуцагч",
+                    "Дэмжлэг",
+                    "Явц",
+                    "Төлөв_тооцоолсон",
+                    "Явцын тайлбар",
+                ]
+                cols = [c for c in cols if c in show_df.columns]
+
+                st.dataframe(show_df[cols], use_container_width=True, hide_index=True)
+                _render_operation_charts(fdf)
 
     with tab4:
+        st.markdown("## Attendance Dashboard")
         render_attendance_dashboard(excel_path)
