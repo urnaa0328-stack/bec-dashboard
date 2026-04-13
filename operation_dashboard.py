@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from modules.attendance_dashboard import render_attendance_dashboard
+from attendance_dashboard import render_attendance_dashboard
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 EXCEL_FILE = BASE_DIR / "allcall_bi_data.xlsx"
