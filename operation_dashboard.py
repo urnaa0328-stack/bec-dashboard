@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 
-from modules.attendance_dashboard import render_attendance_dashboard
+from attendance_dashboard import render_attendance_dashboard
 
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
