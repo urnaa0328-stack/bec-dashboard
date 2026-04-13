@@ -3,7 +3,11 @@ import pandas as pd
 from datetime import datetime
 from openpyxl import load_workbook
 
+APP_TZ = ZoneInfo("Asia/Ulaanbaatar")
 
+
+def _now_local():
+    return datetime.now(APP_TZ)
 # =========================================================
 # HELPERS
 # =========================================================
