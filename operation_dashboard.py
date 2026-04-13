@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 from attendance_dashboard import render_attendance_dashboard
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent
 EXCEL_FILE = BASE_DIR / "allcall_bi_data.xlsx"
 SHEET_NAME = "Operation"
 
@@ -59,7 +59,7 @@ def load_operation_data():
     return df
 
 
-def render_operation_dashboard():
+def render_operation_dashboard(excel_path: str):
     st.markdown("## Operation Dashboard")
 
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -103,22 +103,24 @@ def render_operation_dashboard():
         with f4:
             search_text = st.text_input("Төслийн нэр хайх")
 
-        if selected_type != "Бүгд" and "Ажлын төрөл" in df.columns:
-            df = df[df["Ажлын төрөл"].astype(str) == selected_type]
+        filtered_df = df.copy()
 
-        if selected_owner != "Бүгд" and "Хариуцагч" in df.columns:
-            df = df[df["Хариуцагч"].astype(str) == selected_owner]
+        if selected_type != "Бүгд" and "Ажлын төрөл" in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df["Ажлын төрөл"].astype(str) == selected_type]
+
+        if selected_owner != "Бүгд" and "Хариуцагч" in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df["Хариуцагч"].astype(str) == selected_owner]
 
         if selected_status != "Бүгд" and status_col:
-            df = df[df[status_col].astype(str) == selected_status]
+            filtered_df = filtered_df[filtered_df[status_col].astype(str) == selected_status]
 
-        if search_text and "Төслийн нэр" in df.columns:
-            df = df[df["Төслийн нэр"].astype(str).str.contains(search_text, case=False, na=False)]
+        if search_text and "Төслийн нэр" in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df["Төслийн нэр"].astype(str).str.contains(search_text, case=False, na=False)]
 
-        total = len(df)
-        done = len(df[df[status_col].astype(str).str.contains("хийгдсэн|done|complete", case=False, na=False)]) if status_col else 0
-        active = len(df[df[status_col].astype(str).str.contains("явж|progress|ongoing", case=False, na=False)]) if status_col else 0
-        extended = len(df[df[status_col].astype(str).str.contains("сунгасан|extend", case=False, na=False)]) if status_col else 0
+        total = len(filtered_df)
+        done = len(filtered_df[filtered_df[status_col].astype(str).str.contains("хийгдсэн|done|complete", case=False, na=False)]) if status_col else 0
+        active = len(filtered_df[filtered_df[status_col].astype(str).str.contains("явж|progress|ongoing", case=False, na=False)]) if status_col else 0
+        extended = len(filtered_df[filtered_df[status_col].astype(str).str.contains("сунгасан|extend", case=False, na=False)]) if status_col else 0
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -142,4 +144,4 @@ def render_operation_dashboard():
         st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, hide_index=True)
 
     with tab4:
-        render_attendance_dashboard()
+        render_attendance_dashboard(excel_path)
